@@ -1556,16 +1556,16 @@ impl<'a> TcpSocket<'a> {
                             self.meta.handle, self.local_endpoint, self.remote_endpoint, ack_number,
                             self.local_rx_dup_acks, if self.local_rx_dup_acks == u8::max_value() { "+" } else { "" });
 
-                    if self.local_rx_dup_acks == 1 {
+                    if self.local_rx_dup_acks == 3 {
                         /* update congestion control use Reno (fast recovery) */
-                        self.congestion_window_size = cmp::max(self.remote_mss, cmp::min(self.remote_win_len, self.congestion_window_size) / 2);
+                        self.congestion_window_size = cmp::max(self.remote_mss * 2, self.congestion_window_size / 2);
                         self.congestion_slow_start_threshold = self.congestion_window_size;
                         self.congestion_acks_received = 0;
 
                         net_debug!("{}:{}:{}: update congestion window and ss threshold to {}",
                             self.meta.handle, self.local_endpoint, self.remote_endpoint,
                             self.congestion_window_size);
-                    } else if self.local_rx_dup_acks == 3 {
+
                         self.timer.set_for_fast_retransmit();
                         net_debug!("{}:{}:{}: started fast retransmit",
                                 self.meta.handle, self.local_endpoint, self.remote_endpoint);
@@ -1589,13 +1589,13 @@ impl<'a> TcpSocket<'a> {
 
                 // Update congestion window
                 if self.congestion_window_size < self.congestion_slow_start_threshold {
-                    self.congestion_window_size += self.remote_mss;
+                    self.congestion_window_size = cmp::min(self.remote_mss + self.congestion_window_size, self.tx_buffer.capacity());
                 } else {
                     self.congestion_acks_received += ack_update;
 
                     if self.congestion_acks_received >= self.congestion_window_size {
                         self.congestion_acks_received -= self.congestion_window_size;
-                        self.congestion_window_size += self.remote_mss;
+                        self.congestion_window_size = cmp::min(self.remote_mss + self.congestion_window_size, self.tx_buffer.capacity());
                     }
                 }
 
@@ -1635,9 +1635,9 @@ impl<'a> TcpSocket<'a> {
                     // Note, don't care about failure to insert as sACKs are advisory
                     let _ = self.tx_buffer_sack_ranges.add(offset, len as usize);
 
-                    net_debug!("{}:{}:{}: add sack {}+{}->{}",
+                    net_debug!("{}:{}:{}: add sack {}+{}({})->{}",
                         self.meta.handle, self.local_endpoint, self.remote_endpoint,
-                        self.local_seq_no.0, offset, len);
+                        self.local_seq_no.0, offset, self.local_seq_no.0 + offset as i32, len);
                 }
             }
         }
@@ -1922,10 +1922,9 @@ impl<'a> TcpSocket<'a> {
                     if offset < left {
                         window_end_position = cmp::min(left, window_end_position);
 
-
-                        net_debug!("{}:{}:{}: truncate don't send SACK'd data {}/{}->{}",
+                        net_debug!("{}:{}:{}: truncate don't send SACK'd data ({}+){}(={})->{}",
                             self.meta.handle, self.local_endpoint, self.remote_endpoint,
-                            self.local_seq_no.0, offset, window_end_position);
+                            self.local_seq_no.0, offset, self.local_seq_no.0 + offset as i32, window_end_position);
 
                         break;
                     }
@@ -1940,11 +1939,16 @@ impl<'a> TcpSocket<'a> {
                                     ip_mtu - ip_repr.buffer_len() - repr.mss_header_len());
                 repr.payload = self.tx_buffer.get_allocated(offset, size);
 
+                net_debug!("{}:{}:{}: send {} bytes starting from ({}+){}={}, window end pos: {}, remote mss: {}, packet max: {}, actual len: {}, remain: {}",
+                            self.meta.handle, self.local_endpoint, self.remote_endpoint,
+                            size, self.local_seq_no.0, offset, self.local_seq_no.0 + offset as i32, window_end_position,
+                    self.remote_mss, ip_mtu - ip_repr.buffer_len() - repr.mss_header_len(), repr.payload.len(), self.send_queue());
+
                 // sACK was used
                 if offset != original_offset {
-                    net_debug!("{}:{}:{}: skip {} bytes of SACK'd data",
+                    net_debug!("{}:{}:{}: jump {}=>{} = {} bytes of SACK'd data",
                             self.meta.handle, self.local_endpoint, self.remote_endpoint,
-                            original_offset - offset);
+                            original_offset, offset, (original_offset as i32) - (offset as i32));
                     sack_adjusted_seq = self.local_seq_no + offset;
                     repr.seq_number = sack_adjusted_seq;
                 }
@@ -2023,7 +2027,7 @@ impl<'a> TcpSocket<'a> {
         emit((ip_repr, repr))?;
 
         if self.remote_last_seq != sack_adjusted_seq {
-            self.remote_last_seq = sack_adjusted_seq;
+            self.remote_last_seq = sack_adjusted_seq + repr.payload.len();
             self.tx_buffer_sack_ranges.replace_start_with_hole((self.remote_last_seq - self.local_seq_no) + repr.payload.len());
         }
 
