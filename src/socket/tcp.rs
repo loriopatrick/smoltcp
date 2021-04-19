@@ -1598,6 +1598,10 @@ impl<'a> TcpSocket<'a> {
                         self.congestion_window_size += self.remote_mss;
                     }
                 }
+
+                net_debug!("{}:{}:{}: update ack {}=>{}, congestion window size: {}",
+                    self.meta.handle, self.local_endpoint, self.remote_endpoint,
+                    self.local_seq_no.0, ack_number.0, self.congestion_window_size);
             }
 
             // We've processed everything in the incoming segment, so advance the local
@@ -1630,6 +1634,10 @@ impl<'a> TcpSocket<'a> {
                 if len > 0 {
                     // Note, don't care about failure to insert as sACKs are advisory
                     let _ = self.tx_buffer_sack_ranges.add(offset, len as usize);
+
+                    net_debug!("{}:{}:{}: add sack {}+{}->{}",
+                        self.meta.handle, self.local_endpoint, self.remote_endpoint,
+                        self.local_seq_no.0, offset, len);
                 }
             }
         }
@@ -1905,12 +1913,20 @@ impl<'a> TcpSocket<'a> {
                 // from the transmit buffer. Skip over or truncate data based on sACKs.
                 let original_offset = self.remote_last_seq - self.local_seq_no;
                 let mut offset = original_offset;
-                let mut send_till_offset = cmp::min(self.remote_win_len, self.congestion_window_size);
+
+                // Relative to local_seq_no (last ACK)
+                let mut window_end_position = cmp::min(self.remote_win_len, self.congestion_window_size);
 
                 for (left, right) in self.tx_buffer_sack_ranges.iter_data(0) {
                     // there is chunk of ACK'd data to the right of what we want to send
                     if offset < left {
-                        send_till_offset = cmp::min(left, self.remote_win_len);
+                        window_end_position = cmp::min(left, window_end_position);
+
+
+                        net_debug!("{}:{}:{}: truncate don't send SACK'd data {}->{}",
+                            self.meta.handle, self.local_endpoint, self.remote_endpoint,
+                            offset, window_end_position);
+
                         break;
                     }
 
@@ -1920,13 +1936,16 @@ impl<'a> TcpSocket<'a> {
                     }
                 }
 
-                let size = cmp::min(cmp::min(send_till_offset.max(offset) - offset, self.remote_mss),
+                let size = cmp::min(cmp::min(window_end_position.max(offset) - offset, self.remote_mss),
                                     ip_mtu - ip_repr.buffer_len() - repr.mss_header_len());
                 repr.payload = self.tx_buffer.get_allocated(offset, size);
 
                 // sACK was used
                 if offset != original_offset {
-                    sack_adjusted_seq = self.remote_last_seq + (offset - original_offset);
+                    net_debug!("{}:{}:{}: skip {} bytes of SACK'd data",
+                            self.meta.handle, self.local_endpoint, self.remote_endpoint,
+                            original_offset - offset);
+                    sack_adjusted_seq = self.local_seq_no + offset;
                     repr.seq_number = sack_adjusted_seq;
                 }
 
