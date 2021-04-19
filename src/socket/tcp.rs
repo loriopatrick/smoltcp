@@ -1923,9 +1923,9 @@ impl<'a> TcpSocket<'a> {
                         window_end_position = cmp::min(left, window_end_position);
 
 
-                        net_debug!("{}:{}:{}: truncate don't send SACK'd data {}->{}",
+                        net_debug!("{}:{}:{}: truncate don't send SACK'd data {}/{}->{}",
                             self.meta.handle, self.local_endpoint, self.remote_endpoint,
-                            offset, window_end_position);
+                            self.local_seq_no.0, offset, window_end_position);
 
                         break;
                     }
