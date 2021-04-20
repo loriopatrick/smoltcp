@@ -1594,8 +1594,9 @@ impl<'a> TcpSocket<'a> {
                     self.congestion_acks_received += ack_update;
 
                     if self.congestion_acks_received >= self.congestion_window_size {
-                        self.congestion_acks_received -= self.congestion_window_size;
-                        self.congestion_window_size = cmp::min(self.remote_mss + self.congestion_window_size, self.tx_buffer.capacity());
+                        let count = self.congestion_acks_received / self.congestion_window_size;
+                        self.congestion_acks_received -= self.congestion_window_size * count;
+                        self.congestion_window_size = cmp::min(self.remote_mss * count + self.congestion_window_size, self.tx_buffer.capacity());
                     }
                 }
 
